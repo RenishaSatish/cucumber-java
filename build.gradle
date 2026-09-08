@@ -1,0 +1,109 @@
+plugins {
+    id 'java'
+}
+
+group 'com.pipcall'
+version '1.0-SNAPSHOT'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation 'com.microsoft.playwright:playwright:1.40.0'
+
+    testImplementation 'org.junit.jupiter:junit-jupiter:5.9.3'
+    testImplementation 'org.junit.platform:junit-platform-launcher:1.9.3'
+    testImplementation 'io.cucumber:cucumber-java:7.34.7'
+    testImplementation 'io.cucumber:cucumber-junit-platform-engine:7.34.7'
+    // Add Cucumber JUnit 4 runner and JUnit 4 so we can run scenarios via a JUnit4 runner class
+    testImplementation 'io.cucumber:cucumber-junit:7.34.7'
+    testImplementation 'junit:junit:4.13.2'
+}
+
+sourceCompatibility = JavaVersion.VERSION_11
+targetCompatibility = JavaVersion.VERSION_11
+
+test {
+    useJUnitPlatform()
+    // Increase test logging
+    testLogging {
+        events 'passed', 'skipped', 'failed'
+    }
+}
+
+// Task to force-download Playwright browsers by invoking the Playwright CLI main class
+task installPlaywrightBrowsers(type: JavaExec) {
+    description = 'Install Playwright browsers before running tests'
+    group = 'setup'
+    main = 'com.microsoft.playwright.CLI'
+    classpath = sourceSets.test.runtimeClasspath
+    // Install only Chromium (Chrome) to avoid downloading Firefox and WebKit
+    args 'install', 'chromium'
+}
+
+// Standard cucumber execution uses the JUnit Platform and the cucumber engine. Provide a convenience task.
+task cucumber(type: Test) {
+    description = 'Run Cucumber features via JUnit Platform (Cucumber engine)'
+    group = 'verification'
+    dependsOn installPlaywrightBrowsers
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    useJUnitPlatform()
+}
+
+// Alternative task to run Cucumber via a JUnit4 runner class (io.cucumber.junit.Cucumber).
+// This task intentionally does NOT call useJUnitPlatform() so the classic JUnit4 runner executes.
+task cucumber4(type: Test) {
+    description = 'Run Cucumber features via JUnit4 runner (io.cucumber.junit.Cucumber)'
+    group = 'verification'
+    dependsOn installPlaywrightBrowsers
+    testClassesDirs = sourceSets.test.output.classesDirs
+    classpath = sourceSets.test.runtimeClasspath
+    // Note: do NOT call useJUnitPlatform() here; the default Test execution will run JUnit4 tests when junit is on the classpath.
+}
+
+task generateCucumberReport {
+    description = 'Report location hint'
+    doLast {
+        println "Cucumber HTML report should be at: ${buildDir}/cucumber-report/cucumber-html-report.html or as configured by the engine"
+    }
+}
+
+defaultTasks 'cucumber'
+
+configurations {
+    cucumberReport
+}
+
+dependencies {
+    cucumberReport 'net.masterthought:cucumber-reporting:5.7.0'
+}
+
+// Generate Masterthought (net.masterthought:cucumber-reporting) HTML from cucumber.json
+// Uses a URLClassLoader to avoid putting the reporting library on the main buildscript classpath.
+task generateCucumberMasterthoughtReport {
+    description = 'Generate Masterthought HTML report from cucumber.json'
+    group = 'verification'
+    dependsOn cucumber4
+    doLast {
+        def jsonFile = file("${buildDir}/cucumber-report/cucumber.json")
+        if (!jsonFile.exists()) {
+            println "No cucumber.json found at: ${jsonFile}"
+            return
+        }
+        def jsonPaths = [jsonFile.absolutePath]
+        def reportOutput = file("${buildDir}/cucumber-report/masterthought")
+        reportOutput.mkdirs()
+        // Load the reporting JARs dynamically
+        URLClassLoader classLoader = new URLClassLoader(configurations.cucumberReport.files.collect { it.toURI().toURL() } as URL[], (ClassLoader) null)
+        def reportBuilderClass = classLoader.loadClass('net.masterthought.cucumber.ReportBuilder')
+        def configurationClass = classLoader.loadClass('net.masterthought.cucumber.Configuration')
+        def configuration = configurationClass.getConstructor(File, String).newInstance(reportOutput, project.name)
+        configuration.setBuildNumber(project.version.toString())
+        configuration.addClassifications('Platform', System.getProperty('os.name'))
+        def reportBuilder = reportBuilderClass.getConstructor(List, configurationClass).newInstance(jsonPaths, configuration)
+        reportBuilder.generateReports()
+        println "Masterthought report generated at: ${reportOutput}"
+    }
+}
